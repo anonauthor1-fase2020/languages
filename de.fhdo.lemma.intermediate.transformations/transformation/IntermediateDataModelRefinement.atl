@@ -1,0 +1,601 @@
+-- @atlcompiler emftvm
+-- @path Service=/de.fhdo.lemma.servicedsl.metamodel/model/ServiceViewpointModel.xcore
+-- @path Intermediate=/de.fhdo.lemma.data.intermediate.metamodel/model/IntermediateDataModel.xcore
+
+-- Author: 
+-- E-mail: 
+
+module IntermediateDataModelRefinement;
+create OUT : Intermediate refining IN : Intermediate, SERVICE : Service;
+
+--- Helpers for managing created import instances --------------------------------------------------
+--- Helper to store created IntermediateImport instances. It maps the name of imports to the created
+--- instances and hence enables, e.g., to identify a target IntermediateImport instance from the
+--- name of a source Import instance.
+helper def : createdImports : Map(String, Intermediate!IntermediateImport) = Map{};
+
+--- Called helper rule to add a created IntermediateImport instance to the helper map of created
+--- IntermediateImport instances. Note that we cannot use a "normal" helper here, because we need to
+--- assign the helper map to itself to populate it.
+rule CreatedImport(importName : String, createdImport : Intermediate!IntermediateImport) {
+    do {
+        thisModule.createdImports <-
+            thisModule.createdImports->including(importName, createdImport);
+    }
+}
+
+--- Convenience helper to get a created IntermediateImport instance from a given source Import
+--- instance
+helper def : getCreatedImport(sourceImport : Service!Import)
+    : Intermediate!IntermediateImport = thisModule.createdImports->get(sourceImport.name)
+;
+
+--- Helpers for managing created aspect property instances -----------------------------------------
+--- Helper to store created IntermediateAspectProperty instances. It maps the source
+--- TechnologySpecificProperty instance to the created instances and hence enables, e.g., to
+--- identify a target IntermediateAspectProperty instance from the source TechnologySpecificProperty
+--- instance.
+helper def : createdAspectProperties : Map(Service!TechnologySpecificProperty,
+    Intermediate!IntermediateAspectProperty) = Map{};
+
+--- Called helper rule to add a created IntermediateAspectProperty instance to the helper map of
+--- IntermediateAspectProperty instances. Note that we cannot use a "normal" helper here, because we
+--- need to assign the helper map to itself to populate it.
+rule CreatedAspectProperty(sourceProperty : Service!TechnologySpecificProperty,
+    createdProperty : Intermediate!IntermediateAspectProperty) {
+    do {
+        thisModule.createdAspectProperties <-
+            thisModule.createdAspectProperties->including(sourceProperty, createdProperty);
+    }
+}
+
+--- Convenience helper to get a created IntermediateAspectProperty instance from a given source
+--- TechnologySpecificProperty instance
+helper def : getCreatedAspectProperty(sourceProperty : Service!TechnologySpecificProperty)
+    : Intermediate!IntermediateAspectProperty
+    = thisModule.createdAspectProperties->get(sourceProperty)
+;
+
+----------------------------------------------------------------------------------------------------
+--- Retrieve the root of the intermediate data model
+helper def : intermediateDataModel() : Intermediate!IntermediateDataModel
+    = Intermediate!IntermediateDataModel.allInstancesFrom('IN')->first()
+;
+
+--- Find a MappedComplexType from an IntermediateComplexType instance
+helper def : findMappedComplexType(type : Intermediate!IntermediateComplexType)
+    : Service!MappedComplexType =
+    let allMappedComplexTypes: Sequence(Service!MappedComplexType) =
+        Service!MappedComplexType.allInstancesFrom('SERVICE')
+    in
+        let mappedComplexType : Service!MappedComplexType = allMappedComplexTypes->any(
+            t |
+            t.t_sourceModelUri = thisModule.intermediateDataModel().sourceModelUri and
+            t.buildQualifiedName('.', false) = type.qualifiedName
+        )
+        in
+        mappedComplexType
+;
+
+--- Find an IntermediateComplexType from a MappedComplexType instance
+helper def : findIntermediateComplexType(complexType : Service!MappedComplexType)
+    : Intermediate!IntermediateComplexType =
+    let allIntermediateComplexTypes : Sequence(Intermediate!IntermediateComplexType) =
+        Intermediate!IntermediateComplexType.allInstancesFrom('IN')
+    in
+        let intermediateType : Intermediate!IntermediateComplexType =
+            allIntermediateComplexTypes->any(
+                t |
+                t.qualifiedName = complexType.buildQualifiedName('.', false) and
+                t.dataField.oclIsUndefined()
+            )
+        in
+        intermediateType
+;
+
+--- Find a MappedField from an IntermediateDataField instance based on their fully-qualified names
+helper def : findMappedField(field : Intermediate!IntermediateDataField)
+    : Service!MappedField =
+    let allMappedFields : Sequence(Service!MappedField)
+        = Service!MappedField.allInstancesFrom('SERVICE')
+    in
+        let mappedField : Service!MappedField = allMappedFields->select(
+            f |
+            not f.mappedComplexType.oclIsUndefined())->any(
+                f |
+                f.mappedComplexType.t_sourceModelUri
+                    = thisModule.intermediateDataModel().sourceModelUri and
+                f.buildQualifiedName('.', false) = field.qualifiedName
+        )
+        in
+        mappedField
+;
+
+--- Find a MappedDataOperation from an IntermediateDataOperation instance based on their
+--- fully-qualified names
+helper def : findMappedDataOperation(operation : Intermediate!IntermediateDataOperation)
+    : Service!MappedDataOperation =
+    let allMappedDataOperations : Sequence(Service!MappedDataOperation)
+        = Service!MappedDataOperation.allInstancesFrom('SERVICE')
+    in
+        let mappedDataOperation : Service!MappedDataOperation = allMappedDataOperations->any(
+            o |
+            o.mappedComplexType.t_sourceModelUri
+                = thisModule.intermediateDataModel().sourceModelUri and
+            o.dataOperation.buildQualifiedName('.') = operation.qualifiedName
+        )
+        in
+        mappedDataOperation
+;
+
+--- Find a MappedDataOperationReturnType from an IntermediateDataOperationReturnType instance based
+--- on their fully-qualified names
+helper def : findMappedDataOperationReturnType(
+    returnType : Intermediate!IntermediateDataOperationReturnType)
+    : Service!MappedDataOperationReturnType =
+    let mappedDataOperation : Service!MappedDataOperation
+        = thisModule.findMappedDataOperation(returnType.operation)
+    in
+        if (not mappedDataOperation.oclIsUndefined()) then
+            mappedDataOperation.mappedReturnType
+        else
+            OclUndefined
+        endif
+;
+
+--- Find a MappedDataOperationParameter from an IntermediateDataOperationParameter instance based on
+--- their fully-qualified names
+helper def : findMappedDataOperationParameter(
+    parameter : Intermediate!IntermediateDataOperationParameter)
+    : Service!MappedDataOperationParameter =
+    let mappedDataOperation : Service!MappedDataOperation
+        = thisModule.findMappedDataOperation(parameter.operation)
+    in
+        if (not mappedDataOperation.oclIsUndefined()) then
+            mappedDataOperation.mappedParameters->any(p | p.parameter.name = parameter.name)
+        else
+            OclUndefined
+        endif
+;
+
+--- Find an IntermediateDataField from a MappedField instance based on their fully-qualified names
+helper def : findIntermediateDataField(field : Service!MappedField)
+    : Intermediate!IntermediateDataField =
+    let allIntermediateFields : Sequence(Intermediate!IntermediateDataField)
+        = Intermediate!IntermediateDataField.allInstancesFrom('IN')
+    in
+        let intermediateField : Intermediate!IntermediateDataField =
+            allIntermediateFields->any(f | f.qualifiedName = field. buildQualifiedName('.', false))
+        in
+        intermediateField
+;
+
+--- Determine the kind of a technology-specific type
+helper def : getTechnologySpecificTypeKind(type: Service!Type)
+    : Intermediate!IntermediateTypeKind =
+    if (type.oclIsKindOf(Service!TechnologySpecificPrimitiveType) or
+        type.oclIsKindOf(Service!PrimitiveType)) then
+        #PRIMITIVE
+    else if (type.oclIsKindOf(Service!TechnologySpecificListType)) then
+        #LIST
+    else if (type.oclIsKindOf(Service!TechnologySpecificDataStructure)) then
+        #STRUCTURE
+    else
+        OclUndefined
+    endif
+    endif
+    endif
+;
+
+--- Refine an IntermediateDataOperation for which a technology-specific mapping exists
+rule RefineIntermediateDataOperation {
+    from
+        s : Intermediate!IntermediateDataOperation
+    using {
+        mappedDataOperation : Service!MappedDataOperation = thisModule.findMappedDataOperation(s);
+    }
+    to
+        t : Intermediate!IntermediateDataOperation
+    do {
+        if (not mappedDataOperation.oclIsUndefined())
+            for (aspect in mappedDataOperation.aspects) {
+                t.aspects <- t.aspects->append(
+                    thisModule.IntermediateImportedAspect(aspect, t, 'operation')
+                );
+            }
+
+        t;
+    }
+}
+
+--- Refine an IntermediateDataOperationReturnType for which a technology-specific mapping exists
+rule RefineIntermediateDataOperationReturnType {
+    from
+        s : Intermediate!IntermediateDataOperationReturnType
+    using {
+        mappedComplexType : Service!MappedComplexType =
+            thisModule.findMappedComplexType(s.operation.dataStructure);
+        typeDefinitionTechnology : Service!Technology =
+            if (not mappedComplexType.oclIsUndefined()) then
+                mappedComplexType.t_typeDefinitionTechnology
+            else
+                OclUndefined
+            endif;
+        typeDefinitionTechnologyImport : Service!Import =
+            if (not mappedComplexType.oclIsUndefined()) then
+                mappedComplexType.t_typeDefinitionTechnologyImport
+            else
+                OclUndefined
+            endif;
+        mappedDataOperationReturnType : Service!MappedDataOperationReturnType
+            = thisModule.findMappedDataOperationReturnType(s);
+        mappedType : Service!ImportedType =
+            if (not mappedDataOperationReturnType.oclIsUndefined()) then
+                mappedDataOperationReturnType.mappedType
+            else
+                OclUndefined
+            endif;
+    }
+    to
+        t : Intermediate!IntermediateDataOperationReturnType(
+            originalType <- s.type
+        )
+    do {
+        -- Transform aspects
+        if (not mappedDataOperationReturnType.oclIsUndefined())
+            for (aspect in mappedDataOperationReturnType.aspects) {
+                t.aspects <- t.aspects->append(
+                    thisModule.IntermediateImportedAspect(aspect, t, 'returnType')
+                );
+            }
+
+        -- Determine type
+        if (not typeDefinitionTechnology.oclIsUndefined()) {
+            if (not mappedType.oclIsUndefined())
+                t.type <- thisModule.IntermediateImportedTechnologySpecificType(t, 'returnType',
+                    mappedType, typeDefinitionTechnology);
+            else if (not t.originalType.oclIsUndefined())
+                if (thisModule.hasDefaultPrimitiveTechnologySpecificType(t.originalType,
+                    typeDefinitionTechnology))
+                    t.type <- thisModule.TechnologySpecificPrimitiveIntermediateType(t.originalType,
+                        typeDefinitionTechnology, typeDefinitionTechnologyImport);
+        }
+
+        t;
+    }
+}
+
+--- Refine an IntermediateDataOperationParameter for which a technology-specific mapping exists
+rule RefineIntermediateDataOperationParameter {
+    from
+        s : Intermediate!IntermediateDataOperationParameter
+    using {
+        mappedComplexType : Service!MappedComplexType =
+            thisModule.findMappedComplexType(s.operation.dataStructure);
+        typeDefinitionTechnology : Service!Technology =
+            if (not mappedComplexType.oclIsUndefined()) then
+                mappedComplexType.t_typeDefinitionTechnology
+            else
+                OclUndefined
+            endif;
+        typeDefinitionTechnologyImport : Service!Import =
+            if (not mappedComplexType.oclIsUndefined()) then
+                mappedComplexType.t_typeDefinitionTechnologyImport
+            else
+                OclUndefined
+            endif;
+        mappedDataOperationParameter : Service!MappedDataOperationParameter
+            = thisModule.findMappedDataOperationParameter(s);
+        mappedType: Service!ImportedType =
+            if (not mappedDataOperationParameter.oclIsUndefined()) then
+                mappedDataOperationParameter.mappedType
+            else
+                OclUndefined
+            endif;
+    }
+    to
+        t : Intermediate!IntermediateDataOperationParameter(
+            originalType <- s.type
+        )
+    do {
+        -- Transform aspects
+        if (not mappedDataOperationParameter.oclIsUndefined())
+            for (aspect in mappedDataOperationParameter.aspects) {
+                t.aspects <- t.aspects->append(
+                    thisModule.IntermediateImportedAspect(aspect, t, 'parameter')
+                );
+            }
+
+        -- Determine type
+        if (not typeDefinitionTechnology.oclIsUndefined()) {
+            if (not mappedType.oclIsUndefined())
+                t.type <- thisModule.IntermediateImportedTechnologySpecificType(t,
+                    'parameter', mappedType, typeDefinitionTechnology);
+            else if (not t.originalType.oclIsUndefined())
+                if (thisModule.hasDefaultPrimitiveTechnologySpecificType(t.originalType,
+                    typeDefinitionTechnology))
+                    t.type <- thisModule.TechnologySpecificPrimitiveIntermediateType(t.originalType,
+                        typeDefinitionTechnology, typeDefinitionTechnologyImport);
+        }
+
+        t;
+    }
+}
+
+--- Refine an IntermediateDataField for which a technology-specific type mapping exists
+rule RefineIntermediateDataField {
+    from
+        s : Intermediate!IntermediateDataField
+    using {
+        mappedComplexType : Service!MappedComplexType =
+            thisModule.findMappedComplexType(s.getEffectiveComplexType());
+        typeDefinitionTechnology : Service!Technology =
+            if (not mappedComplexType.oclIsUndefined()) then
+                mappedComplexType.t_typeDefinitionTechnology
+            else
+                OclUndefined
+            endif;
+        typeDefinitionTechnologyImport : Service!Import =
+            if (not mappedComplexType.oclIsUndefined()) then
+                mappedComplexType.t_typeDefinitionTechnologyImport
+            else
+                OclUndefined
+            endif;
+        mappedField : Service!MappedField = thisModule.findMappedField(s);
+        mappedType : Service!ImportedType =
+            if (not mappedField.oclIsUndefined()) then
+                mappedField.mappedType
+            else
+                OclUndefined
+            endif;
+    }
+    to
+        t : Intermediate!IntermediateDataField(
+            originalType <- s.type
+        )
+    do {
+        -- Transform aspects
+        if (not mappedField.oclIsUndefined())
+            for (aspect in mappedField.aspects) {
+                t.aspects <- t.aspects->append(
+                    thisModule.IntermediateImportedAspect(aspect, t, 'dataField')
+                );
+            }
+
+        -- Determine field type
+        if (not typeDefinitionTechnology.oclIsUndefined()) {
+            if (not mappedType.oclIsUndefined())
+                t.type <- thisModule.IntermediateImportedTechnologySpecificType(t, 'dataField',
+                    mappedType, typeDefinitionTechnology);
+            else if (not t.originalType.oclIsUndefined())
+                if (thisModule.hasDefaultPrimitiveTechnologySpecificType(t.originalType,
+                    typeDefinitionTechnology))
+                    t.type <- thisModule.TechnologySpecificPrimitiveIntermediateType(t.originalType,
+                        typeDefinitionTechnology, typeDefinitionTechnologyImport);
+        }
+
+        t;
+    }
+}
+
+--- Called rule to create an IntermediateImportedTechnologySpecificType
+rule IntermediateImportedTechnologySpecificType(container : OclAny, containerFeatureName : String,
+    mappedType : Service!ImportedType, typeDefinitionTechnology : Service!Technology) {
+    to
+        i : Intermediate!IntermediateImportedTechnologySpecificType (
+            name <- mappedType.type.name,
+            qualifiedName <- typeDefinitionTechnology.name
+                .concat('.')
+                .concat(mappedType.type.buildQualifiedName('.')),
+            origin <- #TECHNOLOGY,
+            kind <- thisModule.getTechnologySpecificTypeKind(mappedType.type)
+        )
+    do {
+        i.refSetValue(containerFeatureName, container);
+
+        if (thisModule.getCreatedImport(mappedType.import).oclIsUndefined())
+            thisModule.IntermediateImport(mappedType.import);
+        i.import <- thisModule.getCreatedImport(mappedType.import);
+
+        i;
+    }
+}
+
+--- Check if for a built-in primitive type a default technology-specific primitive type exists in a
+--- given technology
+helper def : hasDefaultPrimitiveTechnologySpecificType(type : Intermediate!IntermediateType,
+    typeDefinitionTechnology : Service!Technology) : Boolean =
+    if (not type.oclIsKindOf(Intermediate!IntermediatePrimitiveType)) then
+        false
+    else
+         not thisModule.findDefaultTechnologySpecificPrimitiveType(type, typeDefinitionTechnology)
+            .oclIsUndefined()
+    endif
+;
+
+--- Helper to find the default technology-specific primitive type for a given built-in primitive
+--- type and a technology
+helper def : findDefaultTechnologySpecificPrimitiveType(
+    primitiveType : Intermediate!IntermediatePrimitiveType,
+    technology : Service!Technology) : Service!TechnologySpecificPrimitiveType =
+    technology.primitiveTypes->any(
+        t |
+        t.default = true and
+        t.basicBuiltinPrimitiveTypes->exists(b | b.typeName = primitiveType.name)
+    )
+;
+
+--- Create an intermediate type that represents a technology-specific primitive type
+rule TechnologySpecificPrimitiveIntermediateType(type : Intermediate!IntermediatePrimitiveType,
+    typeDefinitionTechnology : Service!Technology,
+    typeDefinitionTechnologyImport : Service!Import) {
+    to
+        i : Intermediate!IntermediateImportedTechnologySpecificType(
+            name <- thisModule.findDefaultTechnologySpecificPrimitiveType(type,
+                    typeDefinitionTechnology).name,
+            qualifiedName <- typeDefinitionTechnology.name
+                .concat('.')
+                .concat(thisModule.findDefaultTechnologySpecificPrimitiveType(type,
+                    typeDefinitionTechnology).buildQualifiedName('.')),
+            origin <- #TECHNOLOGY,
+            kind <- #PRIMITIVE
+        )
+    do {
+        if (thisModule.getCreatedImport(typeDefinitionTechnologyImport).oclIsUndefined())
+            thisModule.IntermediateImport(typeDefinitionTechnologyImport);
+        i.import <- thisModule.getCreatedImport(typeDefinitionTechnologyImport);
+
+        i;
+    }
+}
+
+--- Called rule to transform a source Import to a target IntermediateImport
+rule IntermediateImport(sourceImport : Service!Import) {
+    to
+        t : Intermediate!IntermediateImport (
+            name <- sourceImport.name,
+            importUri <- sourceImport.importURI,
+            -- Note that normally this would be a direct mapping between the source and the target
+            -- importType. However, the XMI serlializer seems to be bugged. See the comments in the
+            -- metamodel on why here the name of the import type is used instead.
+            importTypeName <- thisModule.getImportTypeName(sourceImport)
+        )
+    do {
+        t.refSetValue('dataModel', thisModule.intermediateDataModel());
+
+         -- Assign created target instance to the list of imports under the model root
+        thisModule.intermediateDataModel().imports <-
+            thisModule.intermediateDataModel().imports->append(t);
+
+         -- Populate helper of created IntermediateImport instances
+        thisModule.CreatedImport(sourceImport.name, t);
+
+        t;
+    }
+}
+
+--- Helper to get the name of an import type without preceding hash sign ('#')
+helper def : getImportTypeName(import : Service!Import) : String =
+    let rawImportTypeName : String =
+        import.importType.toString()
+    in
+        if (rawImportTypeName.startsWith('#')) then
+            rawImportTypeName.substring(2, rawImportTypeName.size())
+        else
+            rawImportTypeName
+        endif
+;
+
+--- Refine an IntermediateComplexType for which a technology-specific type mapping exists
+rule RefineIntermediateComplexType {
+    from
+        s : Intermediate!IntermediateComplexType (
+            -- Only consider IntermediateComplexType instances that are not used as data field types
+            s.dataField.oclIsUndefined() and
+            not thisModule.findMappedComplexType(s).oclIsUndefined()
+        )
+    using {
+        mappedComplexType: Service!MappedComplexType = thisModule.findMappedComplexType(s);
+    }
+    to
+        t: Intermediate!IntermediateComplexType
+    do {
+        for (aspect in mappedComplexType.aspects) {
+            t.aspects <- t.aspects -> append(
+                thisModule.IntermediateImportedAspect(aspect, t, 'complexType')
+            );
+        }
+
+        t;
+    }
+}
+
+--- Create an IntermediateImportedAspect from an ImportedServiceAspect instance
+rule IntermediateImportedAspect(sourceAspect : Service!ImportedServiceAspect, container : OclAny,
+    containerFeatureName : String) {
+    using {
+        import : Service!Import = sourceAspect.import;
+        importedAspect : Service!ServiceAspect = sourceAspect.importedAspect;
+    }
+    to
+        i : Intermediate!IntermediateImportedAspect (
+            name <- importedAspect.name
+        )
+    do {
+        -- Aspect features
+        for (feature in importedAspect.features) {
+            i.featureNames <- i.featureNames.append(feature.toString());
+        }
+
+        -- Establish reference to container. Note that this cannot be done in the to-clause via
+        -- containerFeatureName <- container. Honestly, I have no clue why this is...
+        i.refSetValue(containerFeatureName, container);
+
+        if (thisModule.getCreatedImport(import).oclIsUndefined())
+            thisModule.IntermediateImport(import);
+        i.import <- thisModule.getCreatedImport(import);
+
+         -- Create properties of aspect and link them with the aspect
+        for (property in importedAspect.properties) {
+            i.properties <- i.properties->append(
+                thisModule.IntermediateAspectProperty(property, i)
+            );
+        }
+
+        -- Create values of aspect and link them with the aspect. Therefore, we consider both, the
+        -- syntactically shorter initialization of a single property aspect and the "normal" case of
+        -- "named" property initialization. Independent of how the aspect and its values were
+        -- specified, we map an aspect value to a an IntermediateAspectPropertyValue instance.
+        if (not sourceAspect.singlePropertyValue.oclIsUndefined())
+            thisModule.IntermediateAspectPropertyValue(sourceAspect.singlePropertyValue,
+                i, thisModule.getCreatedAspectProperty(importedAspect.properties -> first()));
+        else
+            for (value in sourceAspect.values) {
+                thisModule.IntermediateAspectPropertyValue(value.value, i,
+                    thisModule.getCreatedAspectProperty(value.property));
+            }
+
+        i;
+    }
+}
+
+--- Called rule to create an IntermediateAspectProperty instance
+rule IntermediateAspectProperty(sourceProperty : Service!TechnologySpecificProperty,
+    aspect : Intermediate!IntermediateImportedAspect) {
+    to
+        i : Intermediate!IntermediateAspectProperty (
+            name <- sourceProperty.name,
+            type <- sourceProperty.type.typeName
+        )
+    do {
+        i.refSetValue('aspect', aspect);
+
+        for (feature in sourceProperty.features) {
+            i.featureNames <- i.featureNames.append(feature.toString());
+        }
+
+        if (not sourceProperty.defaultValue.oclIsUndefined())
+            i.defaultValue <- sourceProperty.defaultValue.valueAsString();
+
+        aspect.properties <- aspect.properties->append(i);
+        thisModule.CreatedAspectProperty(sourceProperty, i);
+        i;
+    }
+}
+
+--- Called rule to create an IntermediateAspectPropertyValue instance
+rule IntermediateAspectPropertyValue(sourceValue : Service!PrimitiveValue,
+    aspect : Intermediate!IntermediateImportedAspect,
+    property : Intermediate!IntermediateAspectProperty) {
+    to
+        i : Intermediate!IntermediateAspectPropertyValue (
+            value <- sourceValue.valueAsString()
+        )
+    do {
+        i.refSetValue('aspect', aspect);
+        i.refSetValue('property', property);
+
+        aspect.propertyValues <- aspect.propertyValues->append(i);
+        i;
+    }
+}
